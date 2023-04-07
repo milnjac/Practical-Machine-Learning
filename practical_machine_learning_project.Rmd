@@ -1,0 +1,147 @@
+---
+title: "Practical Machine Learning Project"
+output: html_document
+---
+
+## Initial Setup
+
+First, I need to load the proper packages and import the training and testing data. Then setting a seed is important for reproducibility of results from the code.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(caret)
+library(dplyr)
+library(parallel)
+library(doParallel)
+
+training <- read.csv("F:\\R scripts\\machine learning coursera course\\pml-training.csv")
+testing <- read.csv("F:\\R scripts\\machine learning coursera course\\pml-testing.csv")
+
+set.seed(1000)
+```
+
+## Cleaning data and picking features
+
+In this next section, I clean up the training and testing sets, removing variables that are not useful for prediction of the proper class. There were many variables that were either NA or blank for most of the values since they were statistics based on numerous observations, so they were only true values in periodic observations. These would be useless to include as features so they were removed.
+
+X was just a column of row ids so it was removed. Variables that were just timestamps were removed since the prediction model will not be incorporating any temporal dimension to the predictions, only variables that are specific and useful for each observation are being kept. The variables "new_window" and "num_window" were also removed since they are based on grouping observations together. 
+
+```{r}
+# Get the column indices with NA values
+cols_with_na <- which(colSums(is.na(training)) > 0)
+
+cols_with_na_t <- which(colSums(is.na(testing)) > 0)
+# Select the columns with NAvalues
+df_with_na <- training[, cols_with_na]
+
+df_with_na_t <- testing[, cols_with_na_t]
+# Remove the columns with NA values
+training <- training[, -cols_with_na]
+
+testing <- testing[, -cols_with_na_t]
+
+# Select columns with empty strings
+cols_with_empty_str <- sapply(training, function(x) sum(x == "") > 0)
+
+cols_with_empty_str_t <- sapply(testing, function(x) sum(x == "") > 0)
+
+# Look at the columns with empty strings
+df_with_empty_str <- training[, cols_with_empty_str]
+
+df_with_empty_str_t <- testing[, cols_with_empty_str_t]
+
+# Remove the columns with empty strings
+training <- training[, !cols_with_empty_str]
+
+testing <- testing[, !cols_with_empty_str_t]
+
+# Remove variables X, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, new_window, num_window for being irrelevant
+training <- training %>%
+  select(-c(X, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, new_window, num_window))
+
+testing <- testing %>%
+  select(-c(X, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, new_window, num_window, problem_id))
+```
+
+## Creating training set
+
+Here, I split the data between training and validation, with 75% to train and 25% to validate. Further, the features are assigned to the object x, and y is the class variable.
+
+```{r}
+# Splitting the data between training and validation
+
+in_train <- createDataPartition(y=training$classe, p = .75, list=FALSE) 
+
+train <- training[in_train,] 
+
+validation <- training[-in_train,]
+
+#set up x and y to avoid slowness of caret() with model syntax
+
+x <- train[,-54] 
+
+y <- train[,54] 
+
+```
+
+## Training of model through parallel processing
+
+Parallel processing is used here to speed up the time it takes to run models. The implementation is based on Leonard Greski's tutorial that can be found here: https://github.com/lgreski/datasciencectacontent/blob/master/markdown/pml-randomForestPerformance.md
+
+Cross validation is used here to prevent overfitting, which could lead to poor performance on the testing set. It is also used here to help with hyperparameter tuning of the random forest model. The 'mtry' parameter, which determines the number of features that are randomly selected for each tree in the forest, was set as 27 based on the cross validation. The random forest model was chosen since it is known to usually be one of the most proficient models. After testing its accuracy, it was kept, since it achieved an impressive accuracy of 0.994.
+
+```{r}
+#Configuring parallel processing 
+  
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS 
+
+registerDoParallel(cluster) 
+
+#Configuring trainControl object 
+  
+fitControl <- trainControl(method = "cv", number = 5, allowParallel = TRUE)
+
+#Developing training model 
+  
+fit <- train(x,y, method="rf", data = train, trControl = fitControl)
+
+#De-registering parallel processing cluster 
+  
+stopCluster(cluster) 
+registerDoSEQ()
+```
+
+#Predictions of model in validation set and out of sample error
+
+Here, the validation set is used to get a estimation of the out of sample error of the model. The out of sample error is 0.63% which is quite good, so it is likely sufficient for predicting the classes in the test set.
+
+```{r}
+
+#Look at the fit of the sample
+fit
+fit$resample
+confusionMatrix.train(fit)
+
+#testing on validation
+predictions = predict(fit, newdata = validation)
+
+# Calculate the out-of-sample error
+validation$classe <- as.factor(validation$classe)
+oos_error <- confusionMatrix(predictions, validation$classe)$overall['Accuracy']
+
+# Print the out-of-sample error
+cat("Out-of-sample error:", round((1-oos_error)*100, 2), "%")
+
+```
+
+#Prediction of test set
+
+Now that the model has been trained and validated, the classes of the test set must be predicted.
+
+```{r}
+
+#Predict the test set
+test_predictions = predict(fit, newdata = testing)
+
+```
